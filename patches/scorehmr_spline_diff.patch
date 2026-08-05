@@ -1,0 +1,549 @@
+diff --git a/custom/configs/bspline.yaml b/custom/configs/bspline.yaml
+new file mode 100644
+index 0000000..5df1216
+--- /dev/null
++++ b/custom/configs/bspline.yaml
+@@ -0,0 +1,24 @@
++# B-spline temporal smoothing for pred_noise (optional, default off in diffusion).
++# When enabled, at each DDIM step the noise is projected onto a C^2 B-spline curve
++# along the frame dimension before updating x_t.
++# Used only when use_bspline_smooth_noise is True (e.g. from wrapper kwargs).
++
++# B-spline order (degree + 1). 4 = cubic, C^2 continuous.
++order: 4
++
++# m_per_t = "每多少帧放一个控制点" 的等价配置：
++#   "fps_div_3"   -> 每 (fps/3) 帧一个控制点，如 fps=30 则每 10 帧一个 -> M = ceil(num_frames/10)
++#   "fps_div_2"   -> 每 (fps/2) 帧一个；"fps_div_4" -> 每 (fps/4) 帧一个
++#   "fps"         -> 每 fps 帧一个（约每秒一个）
++#   integer       -> M = 该数（总控制点数）
++#   "every_30"    -> 每 30 帧一个 -> M = ceil(num_frames/30)
++# FPS 来自 batch["fps"] 或 wrapper。
++m_per_t: "fps_div_3"
++
++# Elastic soft blend: x_start_smooth = (1 - blend_weight) * x_start_raw + blend_weight * x_start_proj.
++# Avoids gradient erasure and 6D collapse: w=0.4 keeps 2D alignment while pulling toward smooth manifold.
++# Lower (0.2-0.3) = more 2D accuracy, less smooth; higher (0.5-0.6) = smoother, risk of floating.
++blend_weight: 0.6
++
++use_tanh: true
++tanh_amp: 10.0
+diff --git a/custom/utils/bspline.py b/custom/utils/bspline.py
+new file mode 100644
+index 0000000..7305d07
+--- /dev/null
++++ b/custom/utils/bspline.py
+@@ -0,0 +1,200 @@
++"""
++B-spline temporal projection for ScoreHMR pred_noise smoothing.
++Builds the design matrix B (N x M) and provides least-squares projection X_smooth = B @ pinv(B) @ X
++so that the result is C^{order-2} continuous along the first (time) dimension.
++"""
++from __future__ import annotations
++
++import numpy as np
++from pathlib import Path
++from typing import Any, Dict, Optional, Tuple, Union
++
++import torch
++import yaml
++
++
++def _cox_de_boor_basis(t: float, knot_idx: int, order: int, knots: np.ndarray) -> float:
++    """Single B-spline basis N_{knot_idx, order}(t) via Cox-de Boor recursion."""
++    k = order
++    u = knots
++
++    def N(i: int, p: int) -> float:
++        if p == 0:
++            if i >= len(u) - 1:
++                return 0.0
++            # Include right endpoint for last knot span so the final frame is in the support
++            if i == len(u) - 2:
++                return 1.0 if (u[i] <= t <= u[i + 1]) else 0.0
++            return 1.0 if (u[i] <= t < u[i + 1]) else 0.0
++        a1 = (t - u[i]) * N(i, p - 1) / (u[i + p] - u[i]) if (u[i + p] - u[i]) > 1e-12 else 0.0
++        a2 = (u[i + p + 1] - t) * N(i + 1, p - 1) / (u[i + p + 1] - u[i + 1]) if (u[i + p + 1] - u[i + 1]) > 1e-12 else 0.0
++        return a1 + a2
++
++    return N(knot_idx, k - 1)
++
++
++def build_bspline_basis_matrix(
++    num_frames: int,
++    num_control_points: int,
++    order: int = 4,
++    t_min: float = 0.0,
++    t_max: Optional[float] = None,
++) -> np.ndarray:
++    """
++    Build B-spline basis matrix B of shape (num_frames, num_control_points).
++    Frame indices are mapped to parameter t in [t_min, t_max]. Default [0, 1] so the last frame is included.
++    Uses clamped uniform knot vector so the curve interpolates at boundaries.
++    """
++    if t_max is None:
++        t_max = 1.0
++    k = order
++    M = num_control_points
++    if M < k:
++        M = k
++    interior_count = M - k
++    if interior_count > 0:
++        interior = np.linspace(t_min, t_max, interior_count + 2)[1:-1]
++        knots = np.concatenate([[t_min] * k, interior, [t_max] * k])
++    else:
++        knots = np.array([t_min] * k + [t_max] * k)
++
++    t_vals = np.linspace(t_min, t_max, num_frames, dtype=np.float64)
++    B = np.zeros((num_frames, M), dtype=np.float64)
++    for i in range(num_frames):
++        for j in range(M):
++            B[i, j] = _cox_de_boor_basis(float(t_vals[i]), j, k, knots)
++    return B
++
++
++def project_onto_bspline_temporal(
++    X: torch.Tensor,
++    B: torch.Tensor,
++) -> torch.Tensor:
++    """
++    Project X onto the B-spline temporal subspace: X_smooth = B @ (B^T B)^{-1} B^T @ X.
++    X: (N, D), B: (N, M). Returns (N, D) on same device/dtype as X.
++    """
++    # C = (B^T B)^{-1} B^T X  ->  solve B^T B C = B^T X  ->  C (M, D)
++    BtB = B.T @ B
++    BtX = B.T @ X
++    # C = torch.linalg.solve(BtB, BtX)  # (M, D)
++    C = torch.linalg.solve(BtB, BtX)  # (M, D)
++    X_smooth = B @ C
++    return X_smooth
++
++
++def resolve_m_per_t(
++    m_per_t_cfg: Union[int, str],
++    num_frames: int,
++    fps: Optional[float] = None,
++) -> int:
++    """
++    Resolve m_per_t config to integer number of control points M (total over the whole sequence).
++
++    Semantics:
++    - int: M = that number (clamped to [order, num_frames]).
++    - "fps": one control point per frame (M = num_frames) or per second if you prefer; we use M = ceil(num_frames) bounded.
++    - "fps_div_2", "fps_div_3", ...: **one control point every (fps/div) frames** -> spacing = fps/div, M = ceil(num_frames / spacing) = ceil(num_frames * div / fps).
++      E.g. fps_div_3 with fps=30 -> spacing=10 frames -> M = ceil(num_frames/10).
++    - "every_<K>": one control point every K frames -> M = ceil(num_frames / K).
++    """
++    order = 4  # cubic
++    if isinstance(m_per_t_cfg, int):
++        M = max(order, min(m_per_t_cfg, num_frames))
++        return M
++    s = str(m_per_t_cfg).strip().lower()
++    if s.startswith("every_"):
++        try:
++            k = int(s.split("_")[-1])
++            if k < 1:
++                k = 1
++            return max(order, min(int(np.ceil(num_frames / k)), num_frames))
++        except (ValueError, IndexError):
++            pass
++    if s.startswith("frames_per_ctrl_"):
++        try:
++            k = int(s.split("_")[-1])
++            if k < 1:
++                k = 1
++            return max(order, min(int(np.ceil(num_frames / k)), num_frames))
++        except (ValueError, IndexError):
++            pass
++    if s == "fps":
++        if fps is not None and fps > 0:
++            # one control point per second: spacing = fps frames -> M = ceil(num_frames / fps)
++            return max(order, min(int(np.ceil(num_frames / fps)), num_frames))
++        return max(order, min(num_frames, 30))
++    # fps_div_K: one control point every (fps/K) frames -> M = ceil(num_frames / (fps/K)) = ceil(num_frames * K / fps)
++    if s.startswith("fps_div_"):
++        try:
++            div = int(s.split("_")[-1])
++        except (ValueError, IndexError):
++            div = 2
++        if fps is not None and fps > 0:
++            spacing = fps / div  # frames between control points
++            M = int(np.ceil(num_frames / spacing))
++        else:
++            M = max(1, num_frames // div)
++        return max(order, min(M, num_frames))
++    try:
++        return max(order, min(int(m_per_t_cfg), num_frames))
++    except (ValueError, TypeError):
++        return max(1, num_frames // 4)
++
++
++def load_bspline_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
++    """Load B-spline config from custom/configs/bspline.yaml. Returns dict with order, m_per_t."""
++    if config_path is None:
++        # ScoreHMR/custom/configs/bspline.yaml relative to this file: custom/utils/bspline.py -> custom/configs/
++        base = Path(__file__).resolve().parent.parent
++        config_path = base / "configs" / "bspline.yaml"
++    if not config_path.exists():
++        return {"order": 4, "m_per_t": "fps_div_2"}
++    with open(config_path, "r") as f:
++        data = yaml.safe_load(f)
++    return data if isinstance(data, dict) else {"order": 4, "m_per_t": "fps_div_2"}
++
++
++class BsplineTemporalProjector:
++    """
++    Caches the projection matrix for a fixed (N, M, order) so that repeated
++    project_temporal() calls only do the matmul, not the basis build/solve.
++    """
++
++    def __init__(
++        self,
++        num_frames: int,
++        num_control_points: int,
++        order: int = 4,
++        use_tanh: bool = False,
++        tanh_amp: float = 1.0,
++        device: Optional[torch.device] = None,
++        dtype: Optional[torch.dtype] = None,
++    ):
++        self.N = num_frames
++        self.M = num_control_points
++        self.order = order
++        self.use_tanh = bool(use_tanh)
++        self.tanh_amp = float(tanh_amp)
++        B_np = build_bspline_basis_matrix(num_frames, num_control_points, order=order)
++        self.B = torch.from_numpy(B_np).float()
++        if device is not None:
++            self.B = self.B.to(device)
++        if dtype is not None:
++            self.B = self.B.to(dtype)
++        BtB = self.B.T @ self.B
++        self._BtB_inv = torch.linalg.inv(BtB)
++
++    def project(self, X: torch.Tensor) -> torch.Tensor:
++        """X: (N, D) -> (N, D) on same device/dtype as X. Moves B/BtB_inv to X's device/dtype if needed."""
++        dev, d = X.device, X.dtype
++        B = self.B.to(device=dev, dtype=d)
++        BtB_inv = self._BtB_inv.to(device=dev, dtype=d)
++        C = BtB_inv @ (B.T @ X)
++        if bool(self.use_tanh):
++            a = float(self.tanh_amp)
++            if a > 0:
++                C = a * torch.tanh(C / a)
++            else:
++                C = torch.tanh(C)
++        return B @ C
+diff --git a/score_hmr/__init__.py b/score_hmr/__init__.py
+index b06fde7..3220e16 100644
+--- a/score_hmr/__init__.py
++++ b/score_hmr/__init__.py
+@@ -1,2 +1,24 @@
+-from .trainer import Trainer
+-from .diffusion import GaussianDiffusion
++"""
++Keep package imports lightweight.
++
++The demo utilities import submodules like `score_hmr.utils`, which implicitly import
++the package. Avoid importing training-time dependencies at import time.
++"""
++
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from .trainer import Trainer as Trainer
++    from .diffusion import GaussianDiffusion as GaussianDiffusion
++
++__all__ = ["Trainer", "GaussianDiffusion"]
++
++
++def __getattr__(name: str):
++    if name == "Trainer":
++        from .trainer import Trainer
++        return Trainer
++    if name == "GaussianDiffusion":
++        from .diffusion import GaussianDiffusion
++        return GaussianDiffusion
++    raise AttributeError(name)
+diff --git a/score_hmr/diffusion.py b/score_hmr/diffusion.py
+index d25306b..c925c5d 100644
+--- a/score_hmr/diffusion.py
++++ b/score_hmr/diffusion.py
+@@ -1,5 +1,6 @@
+ import numpy as np
+-from typing import Dict, Tuple
++from pathlib import Path
++from typing import Dict, Optional, Tuple
+ from yacs.config import CfgNode
+ import torch
+ from torch import nn
+@@ -96,6 +97,130 @@ class GaussianDiffusion(nn.Module):
+             self.sample_start = kwargs.get("sample_start", cfg.TRAIN.SAMPLE_START)
+             self.ddim_step_size = kwargs.get("ddim_step_size", cfg.TRAIN.DDIM_STEP_SIZE)
+ 
++        # Optional: B-spline temporal smoothing of pred_noise (default off). When on, at each DDIM step
++        # the noise is projected onto a C^2 B-spline curve along the frame dimension before updating x_t.
++        self.use_bspline_smooth_noise = bool(kwargs.get("use_bspline_smooth_noise", False))
++        self.bspline_fps = kwargs.get("bspline_fps", None)  # optional fallback when batch has no "fps"
++        self.bspline_m_per_t = kwargs.get("bspline_m_per_t", None)  # None = use config file
++        self.bspline_order = kwargs.get("bspline_order", None)  # None = use config file
++        self.bspline_use_tanh = kwargs.get("bspline_use_tanh", None)  # None = use config file
++        self.bspline_tanh_amp = kwargs.get("bspline_tanh_amp", None)  # None = use config file
++        self.bspline_blend_weight = kwargs.get("bspline_blend_weight", None)  # None = use config file
++        self._bspline_projector = None
++        self._bspline_config = None
++        if self.use_bspline_smooth_noise:
++            self._load_bspline_config()
++
++    def _load_bspline_config(self) -> None:
++        """Load B-spline config from ScoreHMR/custom/configs/bspline.yaml."""
++        try:
++            import yaml
++        except ImportError:
++            self._bspline_config = {"order": 4, "m_per_t": "fps_div_2"}
++            return
++        config_path = Path(__file__).resolve().parents[1] / "custom" / "configs" / "bspline.yaml"
++        if not config_path.exists():
++            self._bspline_config = {"order": 4, "m_per_t": "fps_div_2"}
++            return
++        with open(config_path, "r") as f:
++            data = yaml.safe_load(f)
++        self._bspline_config = data if isinstance(data, dict) else {"order": 4, "m_per_t": "fps_div_2"}
++        if "blend_weight" not in (self._bspline_config or {}):
++            self._bspline_config["blend_weight"] = 0.4
++        if "use_tanh" not in (self._bspline_config or {}):
++            self._bspline_config["use_tanh"] = False
++        if "tanh_amp" not in (self._bspline_config or {}):
++            self._bspline_config["tanh_amp"] = 1.0
++
++    def _get_bspline_blend_weight(self) -> float:
++        """Elastic soft blend weight: x_smooth = (1-w)*raw + w*proj. Higher w = smoother, lower = better 2D fit."""
++        if self.bspline_blend_weight is not None:
++            return float(self.bspline_blend_weight)
++        cfg = self._bspline_config or {}
++        return float(cfg.get("blend_weight", 0.4))
++
++    def _ensure_bspline_projector(self, batch_size: int, batch: Dict) -> None:
++        """Build and cache B-spline projector for this (batch_size, config). Used when use_bspline_smooth_noise."""
++        try:
++            from custom.utils.bspline import (
++                BsplineTemporalProjector,
++                load_bspline_config,
++                resolve_m_per_t,
++            )
++        except ImportError:
++            # Fallback: resolve path to custom under ScoreHMR
++            import sys
++            score_hmr_root = Path(__file__).resolve().parents[1]
++            custom_utils = score_hmr_root / "custom" / "utils"
++            if str(score_hmr_root) not in sys.path:
++                sys.path.insert(0, str(score_hmr_root))
++            from custom.utils.bspline import (
++                BsplineTemporalProjector,
++                load_bspline_config,
++                resolve_m_per_t,
++            )
++        cfg = self._bspline_config or load_bspline_config()
++        order = int(cfg.get("order", 4)) if self.bspline_order is None else int(self.bspline_order)
++        use_tanh = bool(cfg.get("use_tanh", False)) if self.bspline_use_tanh is None else bool(self.bspline_use_tanh)
++        tanh_amp = float(cfg.get("tanh_amp", 1.0)) if self.bspline_tanh_amp is None else float(self.bspline_tanh_amp)
++        m_per_t_cfg = self.bspline_m_per_t if self.bspline_m_per_t is not None else cfg.get("m_per_t", "fps_div_2")
++        fps = None
++        if batch is not None and "fps" in batch:
++            try:
++                fps = float(batch["fps"])
++            except (TypeError, ValueError):
++                pass
++        if fps is None and self.bspline_fps is not None:
++            try:
++                fps = float(self.bspline_fps)
++            except (TypeError, ValueError):
++                pass
++        order = max(1, min(order, batch_size))
++        M = resolve_m_per_t(m_per_t_cfg, batch_size, fps)
++        M = max(order, min(M, batch_size))
++        if (
++            self._bspline_projector is not None
++            and getattr(self._bspline_projector, "N", None) == batch_size
++            and getattr(self._bspline_projector, "M", None) == M
++            and getattr(self._bspline_projector, "order", None) == order
++            and bool(getattr(self._bspline_projector, "use_tanh", False)) == bool(use_tanh)
++            and float(getattr(self._bspline_projector, "tanh_amp", 0.0)) == float(tanh_amp)
++        ):
++            return
++        self._bspline_projector = BsplineTemporalProjector(
++            num_frames=batch_size,
++            num_control_points=M,
++            order=order,
++            use_tanh=bool(use_tanh),
++            tanh_amp=float(tanh_amp),
++            device=self.device,
++            dtype=torch.float32,
++        )
++        w = self._get_bspline_blend_weight()
++        print(
++            "[Spline-Diff] projector built: N=%d, M=%d, order=%d, fps=%s, blend_weight=%.2f (elastic soft blend)."
++            % (batch_size, M, order, repr(fps), w)
++        )
++
++    def _apply_bspline_noise_smooth(self, pred_noise: torch.Tensor, batch: Optional[Dict] = None) -> torch.Tensor:
++        """If use_bspline_smooth_noise, project pred_noise (N, P) onto B-spline temporal subspace."""
++        if not self.use_bspline_smooth_noise or pred_noise is None:
++            return pred_noise
++        N = pred_noise.size(0)
++        self._ensure_bspline_projector(N, batch)
++        if self._bspline_projector is None:
++            return pred_noise
++        return self._bspline_projector.project(pred_noise)
++
++    def _apply_bspline_pose_smooth(self, x_start: torch.Tensor, batch: Optional[Dict] = None) -> torch.Tensor:
++        """If use_bspline_smooth_noise, project x_start (N, P) onto B-spline temporal subspace (same as noise path)."""
++        if not self.use_bspline_smooth_noise or x_start is None:
++            return x_start
++        N = x_start.size(0)
++        self._ensure_bspline_projector(N, batch)
++        if self._bspline_projector is None:
++            return x_start
++        return self._bspline_projector.project(x_start)
++
+     @property
+     def loss_fn(self):
+         if self.loss_type == "l1":
+@@ -369,6 +494,12 @@ class GaussianDiffusion(nn.Module):
+             batch_size: B*N
+         """
+         shape = (batch_size, self.model.diffusion_dim)
++        if self.use_bspline_smooth_noise:
++            self._bspline_projector = None  # rebuild for this batch_size in _ensure_bspline_projector
++            print(
++                "[Spline-Diff] B-spline pose smoothing ON for this sample (batch_size=%d, seq dim); will smooth x_start then imply pred_noise."
++                % (batch_size,)
++            )
+         sample_fn = self.ddim_with_guidance if self.use_guidance else self.ddim_vanilla
+         return sample_fn(batch, cond_feats, shape)
+ 
+@@ -403,19 +534,25 @@ class GaussianDiffusion(nn.Module):
+         x_t = torch.randn(shape, device=self.device)
+         for time, time_next in time_pairs:
+             time_cond = torch.full((batch_size,), time, device=self.device, dtype=torch.long)
+-            pred_noise, x_start = self.model_predictions(
++            _, x_start_raw = self.model_predictions(
+                 x_t,
+                 time_cond,
+                 cond_feats=cond_feats,
+                 batch=batch,
+                 clip_x_start=clip_denoised,
+             )
++            x_start_proj = self._apply_bspline_pose_smooth(x_start_raw, batch)
++            w = self._get_bspline_blend_weight()
++            x_start_smooth = (1.0 - w) * x_start_raw + w * x_start_proj
+             alpha = self.alphas_cumprod[time]
+             alpha_next = self.alphas_cumprod[time_next]
++            one_minus_alpha = (1 - alpha).clamp(min=1e-8)
++            pred_noise_implied = (x_t - alpha.sqrt() * x_start_smooth) / one_minus_alpha.sqrt()
+             sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+             c = (1 - alpha_next - sigma**2).sqrt()
+             noise = torch.randn_like(x_t)
+-            x_t = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
++            x_t = x_start_smooth * alpha_next.sqrt() + c * pred_noise_implied + sigma * noise
++            x_start = x_start_smooth
+ 
+         return {'x_0': x_start}
+ 
+@@ -485,29 +622,45 @@ class GaussianDiffusion(nn.Module):
+                     clip_x_start=clip_denoised,
+                     inverse=True
+                 )
++                # Do NOT apply B-spline in inversion: it would perturb the ODE path and push x_T off-manifold.
+                 alpha_next = self.alphas_cumprod[time_next]
+                 x_t = x_start * alpha_next.sqrt() + pred_noise * (1 - alpha_next).sqrt()
+ 
+             ### DDIM Sample Loop ###
+             for time, time_next in time_pairs:
+                 time_cond = torch.full((batch_size,), time, device=self.device, dtype=torch.long)
+-                pred_noise, x_start = self.model_predictions(
++                # 1. Raw predictions (prior + 2D guidance, both may be jittery)
++                _, x_start_raw = self.model_predictions(
+                     x_t,
+                     time_cond,
+                     cond_feats=cond_feats,
+                     batch=batch,
+                     clip_x_start=clip_denoised
+                 )
++                # 2. B-spline projection (may over-smooth and hurt 6D); then elastic soft blend to keep 2D gradient
++                x_start_proj = self._apply_bspline_pose_smooth(x_start_raw, batch)
++                w = self._get_bspline_blend_weight()
++                x_start_smooth = (1.0 - w) * x_start_raw + w * x_start_proj
+                 alpha = self.alphas_cumprod[time]
+                 alpha_next = self.alphas_cumprod[time_next]
++                # 3. Derive implied pred_noise from DDIM: x_t = sqrt(alpha)*x_start + sqrt(1-alpha)*noise
++                one_minus_alpha = (1 - alpha).clamp(min=1e-8)
++                pred_noise_implied = (x_t - alpha.sqrt() * x_start_smooth) / one_minus_alpha.sqrt()
+                 sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+                 c = (1 - alpha_next - sigma**2).sqrt()
+                 noise = torch.randn_like(x_t)
+-                x_t = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
++                # 4. DDIM update with consistent smooth state
++                x_t = x_start_smooth * alpha_next.sqrt() + c * pred_noise_implied + sigma * noise
++                x_start = x_start_smooth  # final output and early-stop use smoothed pose
+ 
+         # Return the output.
+         if self.camera_translation is not None:
+             self.camera_translation = self.camera_translation.detach()
++            # Smooth camera translation along time (same B-spline as pose); otherwise root jitters with 2D gradient.
++            if self.use_bspline_smooth_noise:
++                cam_t_proj = self._apply_bspline_pose_smooth(self.camera_translation, batch)
++                w = self._get_bspline_blend_weight()
++                self.camera_translation = (1.0 - w) * self.camera_translation + w * cam_t_proj
+         output = (
+                     self.early_stop_obj.get_preds(x_start, self.camera_translation)
+                     if self.early_stop
+diff --git a/score_hmr/models/model_utils.py b/score_hmr/models/model_utils.py
+index 1dd77e8..de3a14b 100644
+--- a/score_hmr/models/model_utils.py
++++ b/score_hmr/models/model_utils.py
+@@ -7,6 +7,25 @@ from ..diffusion import GaussianDiffusion
+ from constants import CHECKPOINT_DIR, RESULTS_DIR, PARE_CHECKPOINT
+ 
+ 
++def _torch_load_compat(path: str, map_location=None, *, weights_only=None):
++    """
++    PyTorch 2.6 changed `torch.load` default `weights_only` to True.
++    Many older checkpoints (e.g., Lightning) require `weights_only=False`.
++    This helper keeps behavior stable across torch versions.
++    """
++    kwargs = {}
++    if map_location is not None:
++        kwargs["map_location"] = map_location
++    if weights_only is not None:
++        kwargs["weights_only"] = weights_only
++    try:
++        return torch.load(path, **kwargs)
++    except TypeError:
++        # Older torch doesn't support `weights_only`.
++        kwargs.pop("weights_only", None)
++        return torch.load(path, **kwargs)
++
++
+ def load_diffusion_model(cfg, **kwargs):
+     name = kwargs.get("name", "score_hmr")
+     milestone = kwargs.get("milestone", 100)
+@@ -19,7 +38,7 @@ def load_diffusion_model(cfg, **kwargs):
+ 
+     # Load model weights.
+     ckpt_dir = f"{CHECKPOINT_DIR}/{name}" if use_default_ckpt else f"{RESULTS_DIR}/checkpoints/{name}"
+-    data = torch.load(f"{ckpt_dir}/model-{milestone}.pt", map_location=device)
++    data = _torch_load_compat(f"{ckpt_dir}/model-{milestone}.pt", map_location=device, weights_only=False)
+     ema = EMA(diffusion_model, beta=0.995, update_every=10)
+     ema.load_state_dict(data["ema"])
+     ema_model = ema.ema_model
+@@ -44,7 +63,8 @@ def load_pare(cfg_SMPL):
+     )
+ 
+     # Load weights from the given checkpoint.
+-    state_dict = torch.load(PARE_CHECKPOINT)["state_dict"]
++    data = _torch_load_compat(PARE_CHECKPOINT, map_location="cpu", weights_only=False)
++    state_dict = data["state_dict"] if isinstance(data, dict) and "state_dict" in data else data
+     pretrained_keys = state_dict.keys()
+     new_state_dict = OrderedDict()
+     for pk in pretrained_keys:

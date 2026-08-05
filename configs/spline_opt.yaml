@@ -1,0 +1,106 @@
+## Postprocess optimization config for multi_view_smpl_optimizer
+##
+## This file is read by:
+##   multi_view_smpl_optimizer/scripts/gvhmr_preprocess_from_stereo_images.py  (stage=postprocess)
+##
+## Defaults are aligned with:
+##   multi_view_smpl_optimizer/scripts/vis_vitpose_vs_smpl_coco17.py  (--optim_before_vis hard-coded settings)
+##
+## Notes:
+## - m_per_t can be an int, or a string pattern "fps_div_N" (e.g. "fps_div_2"), or "fps" (1 second).
+## - pose_limit_in_loss controls whether the optimizer objective uses pose-limited body_pose before reprojection.
+## - When bspline_plus=true, cfg.refiner_plus_* below control Stage1 segment length, tau, top fraction, and Stage2 knot insertion.
+
+optim_multi_view_joint: true
+optim_with_plane: false
+
+# Optional: use SMPLify-X per-frame reprojection optimization instead of B-spline refiner.
+# Default: disabled (keep existing behavior completely unchanged).
+postprocess_use_smplifyx: false
+
+# Optional: ScoreHMR pred_noise B-spline temporal smoothing (only when postprocess_use_scorehmr=true).
+# When true, at each DDIM step the noise is projected onto a C^2 B-spline curve along frames before updating.
+scorehmr_use_bspline_smooth_noise: true
+# FPS for m_per_t in ScoreHMR custom/configs/bspline.yaml (e.g. "fps_div_2" -> M = fps//2). Omit to use sequence fps from batch.
+scorehmr_bspline_fps: 30
+# 默认关闭。开启后：在平滑版 ScoreHMR 优化完成后，再对该结果做一次 ours 的 LBFGS B-spline 优化（SMPL 版本，非 SMPL-X），结果写回同一 opt_subdir。
+scorehmr_smoothed_then_ours_bspline: false
+
+# SMPLify-X wrapper tuning knobs (only used when postprocess_use_smplifyx=true)
+# These are read directly by the wrapper via `cfg` dict passed from 3dpw.py.
+smplifyx_maxiters_cam: 10
+smplifyx_maxiters_body: 20
+smplifyx_optim_type: lbfgs
+smplifyx_lr: 0.05
+# Frame-parallel multiprocessing: use CPU by default for reproducibility/stability.
+smplifyx_num_workers: 40
+smplifyx_devices: "cpu"
+
+# pose limit applied AFTER optimization before saving (and optionally in loss below). 默认关闭。
+pose_limit: false
+pose_limit_in_loss: false
+
+# whether to optimize global_orient/transl in addition to body_pose
+optimize_global_orient: true
+optimize_transl: true
+
+# optional: select device ("auto" | "cuda" | "cpu")
+device: auto
+
+# Optional: GVHMR native static-joint postprocess (may change transl/body_pose; can shift the person).
+# Default: disabled. Enable only when you explicitly want this behavior.
+native_static_postprocess: false
+
+# BsplineRefineConfig (flattened under "cfg")
+cfg:
+  degree: 3
+  m_per_t: "fps_div_2"
+  conf_thr: 0.3
+
+  # amplitude constraints: c = amp * tanh(u)
+  amp_body_pose: 1.0
+  amp_global_orient: 1.0
+  amp_transl: 1.0
+
+  # priors to prevent over-adjust
+  prior_w_body_pose: 0.1
+  prior_w_global_orient: 0.2
+  prior_w_transl: 0.2
+
+  # multi-view & plane losses (only used when enabled)
+  mv_consistency_w: 10.0
+  ankle_ground_align_w: 10.0
+
+  # static-motion loss (enabled when static_conf_logits exists in pt; independent of optim_with_plane)
+  # static_conf_dim=6 joint order (GVHMR): [L_Ankle, L_Foot, R_Ankle, R_Foot, L_Wrist, R_Wrist]
+  static_motion_w: 2
+  static_joint_w: [1.0, 1.0, 1.0, 1.0, 0.1, 0.1]
+  static_softmax_tau: 1.5
+  # if body_pose is 63D, prefer SMPL24 joints (includes feet) to compute joint speed
+  static_use_smpl24: true
+
+  # optional smoothness on control points
+  smooth_w: 0.02
+
+  # LBFGS settings
+  max_iter: 60
+  lr: 1.0
+  line_search_fn: "strong_wolfe"
+  verbose: true
+
+  learn_knots: false
+  knot_pos_w: 1.0
+  knot_gap_w: 0.2
+  knot_smooth_w: 0.0
+
+  # --- bspline_plus (两阶段时间解耦) 仅当 --bspline_plus 时生效 ---
+  # Stage1 段长：与 m_per_t 同规则，int / "fps_div_N" / "fps"(1秒)。默认 1 秒。
+  refiner_plus_stage1_m_per_t: "fps"
+  # Stage2 触发阈值：区间平均重投影误差 > tau 的区间才参与加密。默认 0.1。
+  refiner_plus_tau: 0.008
+  # 高误差区间中取 Top 比例（0~1）再插入节点。默认 0.5。
+  refiner_plus_top_frac: 0.5
+  # 每个被选中的区间内在 Stage2 插入的节点个数。默认 2。
+  refiner_plus_insert_knots: 4
+  optimize_pose_in_rot6d: true
+
