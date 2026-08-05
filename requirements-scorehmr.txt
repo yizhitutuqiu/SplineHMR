@@ -1,0 +1,11 @@
+# Additional dependencies used by the patched ScoreHMR tree for Spline-Diff.
+# This mirrors the currently validated subset of ScoreHMR requirements.
+
+smplx==0.1.28
+pyrender
+opencv-python
+yacs
+scikit-image
+einops
+ema_pytorch
+loguru

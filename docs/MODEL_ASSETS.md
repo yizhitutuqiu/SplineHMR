@@ -1,87 +1,105 @@
 # Model Assets
 
-SplineHMR demo inference is self-contained inside this repository. It does not fall back to absolute paths outside `SplineHMR/`.
+SplineHMR demo inference is self-contained inside this repository. It does not fall back to absolute paths outside the SplineHMR repository.
 
-For the first open-source demo slice, the input is assumed to be a precomputed GVHMR-style result such as:
+The bundled demo input is already a precomputed GVHMR-style result:
 
 ```text
 inputs/climbing_3mb/hmr4d_results.pt
 ```
 
-That means Spline-Opt does **not** require a full GVHMR checkout or GVHMR checkpoints.
+This means Spline-Opt does **not** require a full GVHMR checkout or GVHMR checkpoints.
 
-## Spline-Opt required assets
+## Required for Spline-Opt
 
-SMPL/SMPLX body models are license-gated. Register and download them from the official SMPL/SMPL-X websites, then place the neutral models here:
+SMPL/SMPL-X body models are license-gated and cannot be redistributed in this repository. Download them from the official websites after registration:
+
+- SMPL neutral model: https://smplify.is.tue.mpg.de/ ; SMPL family website: https://smpl.is.tue.mpg.de/
+- SMPL-X neutral model: https://smpl-x.is.tue.mpg.de/
+
+Place the files exactly here:
 
 ```text
 assets/body_models/smpl/SMPL_NEUTRAL.pkl
 assets/body_models/smplx/SMPLX_NEUTRAL.npz
 ```
 
-The demo uses local sparse regressor files under:
+The SplineHMR demo already includes the small sparse regressor files needed by Spline-Opt/rendering under:
 
 ```text
 multi_view_smpl_optimizer/utils/body_model/
 ```
 
-These regressor files are included with the SplineHMR demo code because they are needed by Spline-Opt and rendering.
+Check Spline-Opt assets:
 
-## Spline-Diff / ScoreHMR required assets
+```bash
+python scripts/check_assets.py --method spline-opt
+```
 
-Prepare ScoreHMR source under this repository and apply the Spline-Diff patch:
+## Required for Spline-Diff / ScoreHMR
+
+Prepare patched ScoreHMR source:
 
 ```bash
 bash scripts/setup_scorehmr.sh
+bash scripts/install_scorehmr_deps.sh
 ```
 
-Download ScoreHMR's released data/model weights:
-
-```bash
-bash scripts/download_scorehmr_data.sh
-```
-
-ScoreHMR also requires the licensed neutral SMPL model. Download it from the official SMPL/SMPLify site, rename it if necessary, and place it here:
-
-```text
-third_party/ScoreHMR/data/smpl/SMPL_NEUTRAL.pkl
-```
-
-The original ScoreHMR README asks users to rename `basicModel_neutral_lbs_10_207_0_v1.0.0.pkl` to `SMPL_NEUTRAL.pkl`.
-
-Small ScoreHMR runtime assets are kept in this repository under `assets/scorehmr/data/` and can be synchronized into the runtime ScoreHMR tree with:
-
-```bash
-bash scripts/sync_scorehmr_assets.sh
-```
-
-Large ScoreHMR weights are not tracked and must be downloaded or copied locally:
+ScoreHMR's large weights are not tracked. Download them using ScoreHMR's `download_data.sh` or copy them from an existing local checkout. The required paths are:
 
 ```text
 third_party/ScoreHMR/data/model_weights/score_hmr/model-100.pt
 third_party/ScoreHMR/data/model_weights/pare/pare_checkpoint.ckpt
 ```
 
+ScoreHMR also needs the licensed neutral SMPL model:
+
+```text
+third_party/ScoreHMR/data/smpl/SMPL_NEUTRAL.pkl
+```
+
+If you already placed `assets/body_models/smpl/SMPL_NEUTRAL.pkl`, you can copy it:
+
+```bash
+mkdir -p third_party/ScoreHMR/data/smpl
+cp assets/body_models/smpl/SMPL_NEUTRAL.pkl third_party/ScoreHMR/data/smpl/SMPL_NEUTRAL.pkl
+```
+
+Small ScoreHMR runtime assets are tracked under `assets/scorehmr/data/`. Sync them into the ScoreHMR runtime tree with:
+
+```bash
+bash scripts/sync_scorehmr_assets.sh
+```
+
+This covers small files such as:
+
+```text
+third_party/ScoreHMR/data/SMPL_to_J19.pkl
+third_party/ScoreHMR/data/smpl_mean_params.npz
+third_party/ScoreHMR/data/stats/*.npz
+third_party/ScoreHMR/data/model_weights/pare/pare_config.yaml
+```
+
+Check Spline-Diff assets:
+
+```bash
+python scripts/check_assets.py --method spline-diff
+```
+
 ## Optional GVHMR source
 
-GVHMR is useful if users want to reproduce the preprocessing step from raw video to `hmr4d_results.pt`, but it is not required for the bundled Spline-Opt demo inference.
+GVHMR is useful only if users want to reproduce preprocessing from a raw video to `hmr4d_results.pt`. It is not required for the bundled Spline-Opt/Spline-Diff demo inputs.
 
-If needed, place it here:
+If needed, place it under:
 
 ```text
 third_party/GVHMR/
 ```
 
-## Check
+## More deployment details
 
-Check only Spline-Opt assets:
+See:
 
-```bash
-python scripts/check_assets.py --method spline-opt
-```
-
-Check Spline-Diff assets as well:
-
-```bash
-python scripts/check_assets.py --method spline-diff
+```text
+docs/DEPLOYMENT.md
 ```

@@ -1,10 +1,36 @@
-# Deployment: validated `splinehmr` conda environment
+# Deployment Guide
 
-This guide records the currently validated deployment flow used in our development container. It starts from a working `gvhmr` conda environment and creates a separate `splinehmr` environment that runs both Spline-Opt and Spline-Diff.
+This guide describes the currently validated `splinehmr` conda environment and the required model assets for running both Spline-Opt and Spline-Diff.
 
-The demo starts from precomputed GVHMR-style input files under `inputs/climbing_3mb`; full GVHMR source/checkpoints are not required for Spline-Opt inference.
+SplineHMR demo inference starts from precomputed GVHMR-style files under `inputs/climbing_3mb`; full GVHMR source/checkpoints are not required for Spline-Opt.
 
-## 1. Create the conda environment
+## Quick summary
+
+```bash
+cd /root/autodl-tmp/work/SplineHMR/SplineHMR
+
+conda create -n splinehmr --clone gvhmr -y
+conda activate splinehmr
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
+
+bash scripts/setup_scorehmr.sh
+bash scripts/install_scorehmr_deps.sh
+bash scripts/sync_scorehmr_assets.sh
+```
+
+Then place/download the licensed body models and large ScoreHMR checkpoints described below, and check:
+
+```bash
+python scripts/check_assets.py --method spline-opt
+python scripts/check_assets.py --method spline-diff
+```
+
+## 1. Environment
+
+### Recommended: clone the working GVHMR environment
+
+This is the route we have validated in the current container:
 
 ```bash
 conda deactivate
@@ -13,59 +39,60 @@ conda activate splinehmr
 python -m pip install --upgrade pip setuptools wheel
 ```
 
-## 2. Install ScoreHMR dependencies
-
-Keep the inherited `gvhmr` GPU stack, especially PyTorch and PyTorch3D. Install only the additional ScoreHMR-side dependencies:
+Install the local SplineHMR package in editable mode:
 
 ```bash
 cd /root/autodl-tmp/work/SplineHMR/SplineHMR
-
-python -m pip install \
-  smplx==0.1.28 \
-  pyrender \
-  opencv-python \
-  yacs \
-  scikit-image \
-  einops \
-  ema_pytorch \
-  loguru
+python -m pip install -e .
 ```
 
-## 3. Prepare ScoreHMR source
+This installs `splinehmr-demo` as a console script, while keeping `python -m splinehmr.demo` available.
 
-Preferred path:
+### Alternative: build a new environment
+
+If you are not cloning `gvhmr`, install CUDA-compatible PyTorch and PyTorch3D first. We do not pin those packages in `requirements.txt` because their wheels depend on your CUDA, driver, Python, and PyTorch ABI.
+
+After PyTorch/PyTorch3D are working, install SplineHMR:
 
 ```bash
-bash scripts/setup_scorehmr.sh
-python -m pip install -e third_party/ScoreHMR
+conda create -n splinehmr python=3.10 -y
+conda activate splinehmr
+python -m pip install --upgrade pip setuptools wheel
+
+# Install CUDA-compatible torch/torchvision/pytorch3d for your machine first.
+# Then:
+python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
-If the network is unavailable and the modified ScoreHMR tree already exists in the parent workspace, use the local copy:
+The lightweight dependency files are:
 
-```bash
-mkdir -p third_party
-cp -a /root/autodl-tmp/work/SplineHMR/bss-smplify/ScoreHMR third_party/ScoreHMR
-python -m pip install -e third_party/ScoreHMR
+```text
+requirements.txt             # SplineHMR demo + patched ScoreHMR Python deps, excluding torch/pytorch3d
+requirements-scorehmr.txt    # ScoreHMR-side extra deps used by scripts/install_scorehmr_deps.sh
+environment.yml              # Minimal conda skeleton; still requires torch/pytorch3d handling
+pyproject.toml               # Editable/package install metadata
 ```
 
-## 4. Prepare assets
+## 2. Spline-Opt assets
 
-Licensed SMPL/SMPLX body models must be placed inside the SplineHMR repo:
-
-```bash
-mkdir -p assets/body_models/smpl assets/body_models/smplx
-```
-
-Required paths:
+Spline-Opt requires the licensed neutral SMPL and SMPL-X body models inside this repository:
 
 ```text
 assets/body_models/smpl/SMPL_NEUTRAL.pkl
 assets/body_models/smplx/SMPLX_NEUTRAL.npz
 ```
 
-For local validation, if these files already exist in the old GVHMR workspace:
+Download sources:
+
+- SMPL neutral model: register at the SMPLify/SMPL website and download the neutral SMPL model. The commonly used file is renamed to `SMPL_NEUTRAL.pkl`.
+- SMPL-X neutral model: register at the SMPL-X website and download the neutral SMPL-X NPZ model, then place `SMPLX_NEUTRAL.npz` as shown above.
+
+For local validation only, if these files already exist in the old GVHMR workspace:
 
 ```bash
+mkdir -p assets/body_models/smpl assets/body_models/smplx
+
 cp /root/autodl-tmp/work/SplineHMR/third_party/GVHMR/inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl \
    assets/body_models/smpl/SMPL_NEUTRAL.pkl
 
@@ -73,11 +100,27 @@ cp /root/autodl-tmp/work/SplineHMR/third_party/GVHMR/inputs/checkpoints/body_mod
    assets/body_models/smplx/SMPLX_NEUTRAL.npz
 ```
 
-ScoreHMR also needs the SMPL neutral file:
+The sparse regressors needed by Spline-Opt/rendering are already included under:
+
+```text
+multi_view_smpl_optimizer/utils/body_model/
+```
+
+## 3. Spline-Diff / ScoreHMR source and assets
+
+Prepare the patched ScoreHMR tree:
 
 ```bash
-mkdir -p third_party/ScoreHMR/data/smpl
-cp assets/body_models/smpl/SMPL_NEUTRAL.pkl third_party/ScoreHMR/data/smpl/SMPL_NEUTRAL.pkl
+bash scripts/setup_scorehmr.sh
+bash scripts/install_scorehmr_deps.sh
+```
+
+If the network is unavailable and the modified ScoreHMR tree already exists in the parent workspace:
+
+```bash
+mkdir -p third_party
+cp -a /root/autodl-tmp/work/SplineHMR/bss-smplify/ScoreHMR third_party/ScoreHMR
+python -m pip install -e third_party/ScoreHMR
 ```
 
 Sync small ScoreHMR runtime assets tracked by this repository:
@@ -86,7 +129,16 @@ Sync small ScoreHMR runtime assets tracked by this repository:
 bash scripts/sync_scorehmr_assets.sh
 ```
 
-Large ScoreHMR weights are not tracked. Download them via ScoreHMR or copy them from the existing workspace:
+This copies files such as `SMPL_to_J19.pkl`, `smpl_mean_params.npz`, `stats/*.npz`, and `pare_config.yaml` from `assets/scorehmr/data/` into `third_party/ScoreHMR/data/`.
+
+ScoreHMR also needs the licensed SMPL neutral model:
+
+```bash
+mkdir -p third_party/ScoreHMR/data/smpl
+cp assets/body_models/smpl/SMPL_NEUTRAL.pkl third_party/ScoreHMR/data/smpl/SMPL_NEUTRAL.pkl
+```
+
+Large ScoreHMR weights are not tracked. Download them with ScoreHMR's `download_data.sh` or copy them from an existing local checkout:
 
 ```bash
 mkdir -p third_party/ScoreHMR/data/model_weights/score_hmr
@@ -99,14 +151,22 @@ cp /root/autodl-tmp/work/SplineHMR/bss-smplify/ScoreHMR/data/model_weights/pare/
    third_party/ScoreHMR/data/model_weights/pare/pare_checkpoint.ckpt
 ```
 
-## 5. Check the installation
+Required ScoreHMR runtime paths are checked by:
+
+```bash
+python scripts/check_assets.py --method spline-diff
+```
+
+## 4. Smoke tests
+
+Asset checks:
 
 ```bash
 python scripts/check_assets.py --method spline-opt
 python scripts/check_assets.py --method spline-diff
 ```
 
-Optional import check:
+Import check:
 
 ```bash
 python - <<'PY'
@@ -118,8 +178,6 @@ print('cuda:', torch.cuda.is_available())
 print('ScoreHMR import OK')
 PY
 ```
-
-## 6. Run smoke tests
 
 Spline-Opt:
 
@@ -140,7 +198,7 @@ python -m splinehmr.demo --method spline-opt --max_frames 2 --max_iter 1
 python -m splinehmr.demo --method spline-diff --max_frames 2
 ```
 
-## 7. Outputs
+## 5. Outputs
 
 Outputs are written to:
 
@@ -161,3 +219,9 @@ report.json
 ```
 
 `render_compare.mp4` is the side-by-side comparison. `render_overlay_compare.mp4` overlays both meshes in one frame: red is before optimization and green is after optimization, with an in-frame legend.
+
+## 6. Upstream references
+
+- SMPL-X model/code: https://github.com/vchoutas/smplx and https://smpl-x.is.tue.mpg.de/
+- SMPL neutral model: https://smplify.is.tue.mpg.de/ ; SMPL family website: https://smpl.is.tue.mpg.de/
+- ScoreHMR: https://github.com/statho/ScoreHMR

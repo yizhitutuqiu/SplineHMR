@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "splinehmr"
+version = "0.1.0"
+description = "SplineHMR demo inference: Spline-Opt and Spline-Diff from precomputed HMR results."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "SplineHMR Authors"}]
+license = {text = "Research use; see third-party licenses for model assets and dependencies."}
+keywords = ["human mesh recovery", "SMPL", "SMPL-X", "B-spline", "ScoreHMR"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "PyYAML",
+  "tqdm",
+  "opencv-python",
+  "imageio[pyav]",
+  "smplx==0.1.28",
+  "einops",
+  "yacs",
+  "scikit-image",
+  "pyrender",
+  "trimesh",
+  "ema_pytorch",
+  "loguru",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+splinehmr-demo = "splinehmr.demo:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["splinehmr*", "multi_view_smpl_optimizer*"]
+
+[tool.setuptools.package-data]
+"multi_view_smpl_optimizer.utils.body_model" = ["*.pt"]
+"multi_view_smpl_optimizer.utils.smpl_limit_utils" = ["*.pkl"]

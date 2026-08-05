@@ -20,36 +20,41 @@ inputs/climbing_3mb/
     └── vitpose.pt
 ```
 
-## Prepare Code And Assets
+## Installation And Assets
 
-Spline-Opt does not need the full GVHMR repository. Prepare the licensed neutral SMPL/SMPLX models here:
+The validated environment flow is documented in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). In short, we currently recommend cloning the working `gvhmr` conda environment and installing SplineHMR in editable mode:
+
+```bash
+conda create -n splinehmr --clone gvhmr -y
+conda activate splinehmr
+cd /root/autodl-tmp/work/SplineHMR/SplineHMR
+python -m pip install -e .
+```
+
+Dependency metadata is provided in:
+
+```text
+requirements.txt
+requirements-scorehmr.txt
+environment.yml
+pyproject.toml
+```
+
+SMPL/SMPL-X body models are license-gated and must be downloaded by the user. Required paths are:
 
 ```text
 assets/body_models/smpl/SMPL_NEUTRAL.pkl
 assets/body_models/smplx/SMPLX_NEUTRAL.npz
 ```
 
-Then check the minimal Spline-Opt assets:
+ScoreHMR source/weights are required only for Spline-Diff. Full asset instructions are in [docs/MODEL_ASSETS.md](docs/MODEL_ASSETS.md).
+
+Check the prepared assets with:
 
 ```bash
 python scripts/check_assets.py --method spline-opt
-```
-
-For Spline-Diff, prepare ScoreHMR source, apply the Spline-Diff patch, and install dependencies:
-
-```bash
-bash scripts/setup_scorehmr.sh
-bash scripts/install_scorehmr_deps.sh
-bash scripts/download_scorehmr_data.sh
-```
-
-For Spline-Diff, also verify ScoreHMR assets with:
-
-```bash
 python scripts/check_assets.py --method spline-diff
 ```
-
-SMPL/SMPLX body models are license-gated and must be downloaded by the user. More details are in `docs/MODEL_ASSETS.md`. The validated conda deployment flow is in `docs/DEPLOYMENT.md`. GVHMR source is optional only if users want to reproduce preprocessing from raw videos.
 
 ## Run Spline-Opt
 

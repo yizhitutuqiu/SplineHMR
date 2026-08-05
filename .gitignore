@@ -6,3 +6,10 @@ assets/body_models/smpl/*.pkl
 assets/body_models/smplx/*.npz
 assets/body_models/smplx/*.pkl
 !assets/body_models/README.md
+
+# Python packaging/build artifacts
+*.egg-info/
+build/
+dist/
+__pycache__/
+.pytest_cache/

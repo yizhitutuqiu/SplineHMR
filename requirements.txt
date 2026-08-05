@@ -1,0 +1,21 @@
+# SplineHMR demo Python dependencies that are safe to install with pip.
+#
+# PyTorch and PyTorch3D are intentionally not pinned here because their wheels
+# depend on the local CUDA/Python ABI. Install them first for your machine, or
+# use the validated flow in docs/DEPLOYMENT.md: clone the working gvhmr conda
+# environment and then install this file.
+
+numpy
+scipy
+PyYAML
+tqdm
+opencv-python
+imageio[pyav]
+smplx==0.1.28
+einops
+yacs
+scikit-image
+pyrender
+trimesh
+ema_pytorch
+loguru

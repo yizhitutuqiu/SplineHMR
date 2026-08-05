@@ -1,0 +1,10 @@
+include README.md
+include requirements.txt
+include requirements-scorehmr.txt
+include environment.yml
+recursive-include configs *.yaml *.yml
+recursive-include docs *.md
+recursive-include scripts *.sh *.py
+recursive-include assets/scorehmr/data *.pkl *.npz *.yaml
+recursive-include multi_view_smpl_optimizer/utils/body_model *.pt
+recursive-include multi_view_smpl_optimizer/utils/smpl_limit_utils *.pkl
