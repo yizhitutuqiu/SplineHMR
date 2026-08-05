@@ -30,10 +30,10 @@ index 0000000..5df1216
 +tanh_amp: 10.0
 diff --git a/custom/utils/bspline.py b/custom/utils/bspline.py
 new file mode 100644
-index 0000000..7305d07
+index 0000000..84d404b
 --- /dev/null
 +++ b/custom/utils/bspline.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,199 @@
 +"""
 +B-spline temporal projection for ScoreHMR pred_noise smoothing.
 +Builds the design matrix B (N x M) and provides least-squares projection X_smooth = B @ pinv(B) @ X
@@ -107,7 +107,7 @@ index 0000000..7305d07
 +    B: torch.Tensor,
 +) -> torch.Tensor:
 +    """
-+    Project X onto the B-spline temporal subspace: X_smooth = B @ (B^T B)^{-1} B^T @ X.
++    Project X onto the B-spline temporal subspace: X_smooth = B @ pinv(B) @ X.
 +    X: (N, D), B: (N, M). Returns (N, D) on same device/dtype as X.
 +    """
 +    # C = (B^T B)^{-1} B^T X  ->  solve B^T B C = B^T X  ->  C (M, D)
@@ -218,15 +218,14 @@ index 0000000..7305d07
 +            self.B = self.B.to(device)
 +        if dtype is not None:
 +            self.B = self.B.to(dtype)
-+        BtB = self.B.T @ self.B
-+        self._BtB_inv = torch.linalg.inv(BtB)
++        self._B_pinv = torch.linalg.pinv(self.B)
 +
 +    def project(self, X: torch.Tensor) -> torch.Tensor:
 +        """X: (N, D) -> (N, D) on same device/dtype as X. Moves B/BtB_inv to X's device/dtype if needed."""
 +        dev, d = X.device, X.dtype
 +        B = self.B.to(device=dev, dtype=d)
-+        BtB_inv = self._BtB_inv.to(device=dev, dtype=d)
-+        C = BtB_inv @ (B.T @ X)
++        B_pinv = self._B_pinv.to(device=dev, dtype=d)
++        C = B_pinv @ X
 +        if bool(self.use_tanh):
 +            a = float(self.tanh_amp)
 +            if a > 0:
@@ -266,7 +265,7 @@ index b06fde7..3220e16 100644
 +        return GaussianDiffusion
 +    raise AttributeError(name)
 diff --git a/score_hmr/diffusion.py b/score_hmr/diffusion.py
-index d25306b..c925c5d 100644
+index d25306b..e536776 100644
 --- a/score_hmr/diffusion.py
 +++ b/score_hmr/diffusion.py
 @@ -1,5 +1,6 @@
@@ -277,7 +276,7 @@ index d25306b..c925c5d 100644
  from yacs.config import CfgNode
  import torch
  from torch import nn
-@@ -96,6 +97,130 @@ class GaussianDiffusion(nn.Module):
+@@ -96,6 +97,131 @@ class GaussianDiffusion(nn.Module):
              self.sample_start = kwargs.get("sample_start", cfg.TRAIN.SAMPLE_START)
              self.ddim_step_size = kwargs.get("ddim_step_size", cfg.TRAIN.DDIM_STEP_SIZE)
  
@@ -409,7 +408,7 @@ index d25306b..c925c5d 100644
      @property
      def loss_fn(self):
          if self.loss_type == "l1":
-@@ -369,6 +494,12 @@ class GaussianDiffusion(nn.Module):
+@@ -369,6 +495,12 @@ class GaussianDiffusion(nn.Module):
              batch_size: B*N
          """
          shape = (batch_size, self.model.diffusion_dim)
@@ -422,7 +421,7 @@ index d25306b..c925c5d 100644
          sample_fn = self.ddim_with_guidance if self.use_guidance else self.ddim_vanilla
          return sample_fn(batch, cond_feats, shape)
  
-@@ -403,19 +534,25 @@ class GaussianDiffusion(nn.Module):
+@@ -403,19 +535,25 @@ class GaussianDiffusion(nn.Module):
          x_t = torch.randn(shape, device=self.device)
          for time, time_next in time_pairs:
              time_cond = torch.full((batch_size,), time, device=self.device, dtype=torch.long)
@@ -450,7 +449,7 @@ index d25306b..c925c5d 100644
  
          return {'x_0': x_start}
  
-@@ -485,29 +622,45 @@ class GaussianDiffusion(nn.Module):
+@@ -485,29 +623,45 @@ class GaussianDiffusion(nn.Module):
                      clip_x_start=clip_denoised,
                      inverse=True
                  )

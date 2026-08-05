@@ -5,6 +5,25 @@ Demo code for SplineHMR. This first open-source slice focuses on inference from 
 - Spline-Opt: B-spline control-space LBFGS refinement.
 - Spline-Diff: ScoreHMR sampling with B-spline temporal projection.
 
+<p align="center">
+  <img src="assets/readme/teaser.png" width="900" alt="SplineHMR teaser">
+</p>
+
+<p align="center"><em>SplineHMR improves temporal stability and fitting quality for human mesh recovery through Spline-Opt and Spline-Diff.</em></p>
+
+<details>
+<summary>Method schematics</summary>
+
+<p align="center">
+  <img src="assets/readme/splinehmr_overview.png" width="850" alt="SplineHMR overview">
+</p>
+
+<p align="center">
+  <img src="assets/readme/spline_diff_overview.png" width="850" alt="Spline-Diff overview">
+</p>
+
+</details>
+
 Runtime code and assets are kept inside this repository. Spline-Opt starts from precomputed `hmr4d_results.pt` and does not require a full GVHMR checkout; only local SMPL/SMPLX body-model assets are required for optimization/rendering.
 
 ## Demo Input
