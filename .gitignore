@@ -13,3 +13,5 @@ build/
 dist/
 __pycache__/
 .pytest_cache/
+# Local side-by-side demo MP4 backups before GIF compression.
+docs/demo_*_input_vs_spline_opt.mp4
