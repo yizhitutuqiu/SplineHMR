@@ -20,13 +20,13 @@ Demo code for SplineHMR. This first open-source slice focuses on inference from 
 <p align="center"><em>SplineHMR improves temporal stability and fitting quality for human mesh recovery through Spline-Opt and Spline-Diff.</em></p>
 
 <p align="center">
-  <img src="assets/readme/spline_opt_overlay.gif" width="520" alt="Spline-Opt red-green overlay demo">
+  <img src="assets/readme/spline_opt_overlay.gif" width="560" alt="Spline-Opt red-green overlay demo">
 </p>
 
 <p align="center"><em>Demo teaser: left = input video, right = Spline-Opt overlay output (red before, green after).</em></p>
 
 <p align="center">
-  <img src="assets/readme/spline_opt_overlay_climbing_2.gif" width="520" alt="Spline-Opt red-green overlay demo on climbing_2_3mb">
+  <img src="assets/readme/spline_opt_overlay_climbing_2.gif" width="560" alt="Spline-Opt red-green overlay demo on climbing_2_3mb">
 </p>
 
 <p align="center"><em>Additional input/output Spline-Opt demo on <code>inputs/climbing_2_3mb</code>.</em></p>
