@@ -1,0 +1,51 @@
+# Spline-Diff demo config.
+#
+# This file is the repository-local/default configuration used by:
+#   python -m splinehmr.demo --method spline-diff
+#
+# It mirrors the modified ScoreHMR setup used by Spline-Diff, but keeps all
+# user-facing demo knobs inside this repository instead of requiring edits under
+# third_party/ScoreHMR. Paths remain self-contained under the SplineHMR repo;
+# large ScoreHMR checkpoints/body models are still external licensed assets.
+
+scorehmr:
+  # ScoreHMR checkpoint selector under third_party/ScoreHMR/data/model_weights.
+  ckpt_name: score_hmr
+  milestone: 100
+  use_default_ckpt: true
+
+  # Sampling / 2D keypoint-guidance settings.
+  num_samples: 1
+  optim_iters: 2
+  early_stopping: true
+  temporal_guidance: false
+
+  # Conditioning. Demo defaults to dummy conditioning for lightweight inference.
+  # Set use_pare_cond=true to extract PARE features from the input video frames.
+  allow_dummy_cond: true
+  use_pare_cond: false
+  log_pare: false
+
+bspline:
+  # Enable Spline-Diff: project DDIM clean-state/noise estimates onto a B-spline
+  # temporal subspace during ScoreHMR sampling.
+  use_bspline_smooth_noise: true
+
+  # FPS used to resolve m_per_t. "auto" uses the input video FPS.
+  fps: auto
+
+  # B-spline order. 4 means cubic B-spline with C^2 continuity.
+  order: 4
+
+  # Temporal basis density. For fps=30, fps_div_3 means one control point per
+  # 10 frames. Supported forms: fps_div_N, fps, every_N, or an integer.
+  m_per_t: fps_div_3
+
+  # Elastic soft blend:
+  #   x_start = (1 - blend_weight) * raw + blend_weight * B-spline-projected
+  # Larger values are smoother; smaller values keep stronger image fidelity.
+  blend_weight: 0.6
+
+  # Bound projected corrections for conservative smoothing.
+  use_tanh: true
+  tanh_amp: 10.0

@@ -2,7 +2,7 @@
 
 This guide describes the currently validated `splinehmr` conda environment and the required model assets for running both Spline-Opt and Spline-Diff.
 
-SplineHMR demo inference starts from precomputed GVHMR-style files under `inputs/climbing_3mb`; full GVHMR source/checkpoints are not required for Spline-Opt.
+SplineHMR demo inference starts from precomputed GVHMR-style files. The default input is `inputs/climbing_3mb`, and additional prepared sequences such as `inputs/climbing_2_3mb` can be selected with `--input_dir`/`--input`. Full GVHMR source/checkpoints are not required for Spline-Opt.
 
 ## Quick summary
 
@@ -191,6 +191,8 @@ Spline-Diff:
 python -m splinehmr.demo --method spline-diff --max_frames 3 --skip_render
 ```
 
+Spline-Diff runtime defaults are self-contained in `configs/spline_diff.yaml`. This file controls the ScoreHMR checkpoint selector, sampling/guidance settings, and B-spline projection parameters such as `m_per_t`, `order`, `blend_weight`, `use_tanh`, and `tanh_amp`. The demo reads it by default; use `--spline_diff_config <path>` or the short CLI overrides (`--m_per_t`, `--scorehmr_blend_weight`, `--scorehmr_optim_iters`, `--scorehmr_use_tanh`, `--scorehmr_tanh_amp`) for quick experiments.
+
 Rendering smoke tests:
 
 ```bash
@@ -198,12 +200,34 @@ python -m splinehmr.demo --method spline-opt --max_frames 2 --max_iter 1
 python -m splinehmr.demo --method spline-diff --max_frames 2
 ```
 
-## 5. Outputs
+## 5. Inputs and outputs
+
+The demo input argument may be either an input directory or its video file:
+
+```bash
+python -m splinehmr.demo --method spline-opt --input_dir inputs/climbing_2_3mb
+python -m splinehmr.demo --method spline-opt --input inputs/climbing_2_3mb/0_input_video.mp4
+```
+
+Each input directory must contain:
+
+```text
+0_input_video.mp4
+hmr4d_results.pt
+preprocess/bbx.pt
+preprocess/vitpose.pt
+```
 
 Outputs are written to:
 
 ```text
-outputs/climbing_3mb/<method>/
+outputs/<input_name>/<method>/
+```
+
+For example, `--input_dir inputs/climbing_2_3mb --method spline-opt` writes to:
+
+```text
+outputs/climbing_2_3mb/spline-opt/
 ```
 
 Each rendered run produces:

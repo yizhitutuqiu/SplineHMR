@@ -25,6 +25,12 @@ Demo code for SplineHMR. This first open-source slice focuses on inference from 
 
 <p align="center"><em>Demo teaser: red = before optimization, green = after Spline-Opt.</em></p>
 
+<p align="center">
+  <img src="assets/readme/spline_opt_overlay_climbing_2.gif" width="320" alt="Spline-Opt red-green overlay demo on climbing_2_3mb">
+</p>
+
+<p align="center"><em>Additional Spline-Opt demo on <code>inputs/climbing_2_3mb</code>.</em></p>
+
 <details>
 <summary>Method schematics</summary>
 
@@ -40,17 +46,26 @@ Demo code for SplineHMR. This first open-source slice focuses on inference from 
 
 Runtime code and assets are kept inside this repository. Spline-Opt starts from precomputed `hmr4d_results.pt` and does not require a full GVHMR checkout; only local SMPL/SMPLX body-model assets are required for optimization/rendering.
 
-## Demo Input
+## Demo Inputs
 
-The bundled demo input is `inputs/climbing_3mb`:
+By default, the demo uses `inputs/climbing_3mb`. You can choose another prepared input with `--input_dir` or the shorter `--input`. The argument may point either to the input directory or directly to its `0_input_video.mp4`; in the latter case SplineHMR uses the video's parent directory.
+
+Each input directory should follow this structure:
 
 ```text
-inputs/climbing_3mb/
+inputs/<sequence_name>/
 ├── 0_input_video.mp4
 ├── hmr4d_results.pt
 └── preprocess/
     ├── bbx.pt
     └── vitpose.pt
+```
+
+Bundled examples include:
+
+```text
+inputs/climbing_3mb
+inputs/climbing_2_3mb
 ```
 
 ## Installation And Assets
@@ -98,6 +113,14 @@ cd /root/autodl-tmp/work/SplineHMR/SplineHMR
 conda run -n splinehmr python -m splinehmr.demo --method spline-opt
 ```
 
+Run Spline-Opt on another bundled input:
+
+```bash
+conda run -n splinehmr python -m splinehmr.demo \
+  --method spline-opt \
+  --input_dir inputs/climbing_2_3mb
+```
+
 Spline-Opt defaults are copied from GVHMR's demo postprocess config used by `--enable-bspline-refine`, now stored at `configs/spline_opt.yaml`. Important defaults include `m_per_t: fps_div_2`, `max_iter: 60`, `amp_*: 1.0`, `prior_w_body_pose: 0.1`, `prior_w_global_orient/transl: 0.2`, `smooth_w: 0.02`, `static_motion_w: 2`, and `optimize_pose_in_rot6d: true`.
 
 Optional quick test:
@@ -113,7 +136,24 @@ cd /root/autodl-tmp/work/SplineHMR/SplineHMR
 conda run -n splinehmr python -m splinehmr.demo --method spline-diff
 ```
 
-Spline-Diff reads the patched ScoreHMR config from `third_party/ScoreHMR/custom/configs/bspline.yaml`. By default this mirrors the current modified ScoreHMR tree: `m_per_t: fps_div_3`, `blend_weight: 0.6`, `use_tanh: true`, `tanh_amp: 10.0`.
+Run Spline-Diff on another bundled input:
+
+```bash
+conda run -n splinehmr python -m splinehmr.demo \
+  --method spline-diff \
+  --input_dir inputs/climbing_2_3mb
+```
+
+Spline-Diff defaults are stored in this repository at `configs/spline_diff.yaml`. The demo reads this YAML by default and passes the resolved values into the patched ScoreHMR sampler, so users do not need to edit files under `third_party/ScoreHMR`. Important defaults mirror the current modified ScoreHMR tree: `m_per_t: fps_div_3`, `blend_weight: 0.6`, `use_tanh: true`, `tanh_amp: 10.0`, and `optim_iters: 2`.
+
+Optional config overrides:
+
+```bash
+conda run -n splinehmr python -m splinehmr.demo --method spline-diff \
+  --spline_diff_config configs/spline_diff.yaml \
+  --m_per_t fps_div_4 \
+  --scorehmr_blend_weight 0.4
+```
 
 ScoreHMR outputs are treated as SMPL, not SMPLX. For Spline-Diff rendering, the demo uses SMPL directly, padding/cropping body pose to 69D, matching the special handling used in the original bss-smplify pipeline.
 

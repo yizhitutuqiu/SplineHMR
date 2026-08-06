@@ -18,14 +18,26 @@ def _parse_args() -> argparse.Namespace:
     root = repo_root()
     p = argparse.ArgumentParser(description="Run SplineHMR demo inference from GVHMR outputs.")
     p.add_argument("--method", choices=["spline-opt", "spline-diff"], required=True)
-    p.add_argument("--input_dir", type=Path, default=root / "inputs" / "climbing_3mb")
+    p.add_argument(
+        "--input_dir",
+        "--input",
+        dest="input_dir",
+        type=Path,
+        default=root / "inputs" / "climbing_3mb",
+        help=(
+            "Demo input directory, or the input video file inside that directory. "
+            "Defaults to inputs/climbing_3mb. The directory must contain "
+            "0_input_video.mp4, hmr4d_results.pt, preprocess/bbx.pt, and preprocess/vitpose.pt."
+        ),
+    )
     p.add_argument("--output_dir", type=Path, default=None)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--max_frames", type=int, default=None)
-    p.add_argument("--m_per_t", type=str, default=None, help="Optional override. By default Spline-Opt reads configs/spline_opt.yaml; Spline-Diff reads ScoreHMR custom/configs/bspline.yaml.")
+    p.add_argument("--m_per_t", type=str, default=None, help="Optional B-spline density override for Spline-Opt/Spline-Diff.")
     p.add_argument("--max_iter", type=int, default=None, help="Optional Spline-Opt LBFGS iteration override.")
     p.add_argument("--spline_opt_config", type=Path, default=root / "configs" / "spline_opt.yaml")
-    p.add_argument("--scorehmr_optim_iters", type=int, default=2)
+    p.add_argument("--spline_diff_config", type=Path, default=root / "configs" / "spline_diff.yaml")
+    p.add_argument("--scorehmr_optim_iters", type=int, default=None, help="Optional override for configs/spline_diff.yaml scorehmr.optim_iters.")
     p.add_argument("--scorehmr_blend_weight", type=float, default=None)
     p.add_argument("--scorehmr_use_pare_cond", action="store_true")
     p.add_argument("--scorehmr_use_tanh", choices=["true", "false"], default=None)
@@ -35,6 +47,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no_fast_render", dest="fast_render", action="store_false")
     p.set_defaults(fast_render=True)
     return p.parse_args()
+
+
+def _normalize_input_dir(path: Path) -> Path:
+    """Accept either a demo input directory or its video file path."""
+    path = path.expanduser().resolve()
+    if path.is_file():
+        if path.suffix.lower() != ".mp4":
+            raise ValueError(f"--input/--input_dir file must be an .mp4 video, got: {path}")
+        return path.parent
+    return path
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -151,22 +173,66 @@ def _run_spline_diff(data: dict[str, Any], T: int, args: argparse.Namespace, fps
     else:
         body_pose_69 = body_pose[:, :69]
 
+    diff_cfg = _load_yaml(args.spline_diff_config)
+    score_cfg = dict(diff_cfg.get("scorehmr", {}) or {})
+    bspline_cfg = dict(diff_cfg.get("bspline", {}) or {})
+
+    def _optional_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+            return None
+        return float(value)
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+            return None
+        return int(value)
+
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
     tanh_override = None
     if args.scorehmr_use_tanh is not None:
         tanh_override = str(args.scorehmr_use_tanh).lower() == "true"
 
+    fps_cfg = bspline_cfg.get("fps", "auto")
+    if isinstance(fps_cfg, str) and fps_cfg.strip().lower() == "auto":
+        bspline_fps = float(fps or 30.0)
+    else:
+        bspline_fps = _optional_float(fps_cfg)
+
+    m_per_t = args.m_per_t if args.m_per_t is not None else bspline_cfg.get("m_per_t", None)
+    optim_iters = int(args.scorehmr_optim_iters if args.scorehmr_optim_iters is not None else score_cfg.get("optim_iters", 2))
+    use_pare_cond = _as_bool(score_cfg.get("use_pare_cond", False)) or bool(args.scorehmr_use_pare_cond)
+    use_tanh = tanh_override if tanh_override is not None else bspline_cfg.get("use_tanh", None)
+    tanh_amp = args.scorehmr_tanh_amp if args.scorehmr_tanh_amp is not None else bspline_cfg.get("tanh_amp", None)
+    blend_weight = args.scorehmr_blend_weight if args.scorehmr_blend_weight is not None else bspline_cfg.get("blend_weight", None)
+
     cfg = ScoreHMRRefineCfg(
-        num_samples=1,
-        optim_iters=int(args.scorehmr_optim_iters),
-        early_stopping=True,
-        use_pare_cond=bool(args.scorehmr_use_pare_cond),
-        use_bspline_smooth_noise=True,
-        bspline_fps=float(fps or 30.0),
-        bspline_m_per_t=args.m_per_t,
-        bspline_order=None,
-        bspline_use_tanh=tanh_override,
-        bspline_tanh_amp=args.scorehmr_tanh_amp,
-        bspline_blend_weight=args.scorehmr_blend_weight,
+        ckpt_name=str(score_cfg.get("ckpt_name", "score_hmr")),
+        milestone=int(score_cfg.get("milestone", 100)),
+        use_default_ckpt=_as_bool(score_cfg.get("use_default_ckpt", True)),
+        num_samples=int(score_cfg.get("num_samples", 1)),
+        optim_iters=optim_iters,
+        early_stopping=_as_bool(score_cfg.get("early_stopping", True)),
+        temporal_guidance=_as_bool(score_cfg.get("temporal_guidance", False)),
+        allow_dummy_cond=_as_bool(score_cfg.get("allow_dummy_cond", True)),
+        use_pare_cond=use_pare_cond,
+        log_pare=_as_bool(score_cfg.get("log_pare", False)),
+        use_bspline_smooth_noise=_as_bool(bspline_cfg.get("use_bspline_smooth_noise", True)),
+        bspline_fps=bspline_fps,
+        bspline_m_per_t=m_per_t,
+        bspline_order=_optional_int(bspline_cfg.get("order", None)),
+        bspline_use_tanh=None if use_tanh is None else _as_bool(use_tanh),
+        bspline_tanh_amp=_optional_float(tanh_amp),
+        bspline_blend_weight=_optional_float(blend_weight),
     )
     out = refine_smpl_to_2d_with_scorehmr(
         global_orient_aa=params["global_orient"][:T],
@@ -193,6 +259,31 @@ def _run_spline_diff(data: dict[str, Any], T: int, args: argparse.Namespace, fps
             "D": int(D),
             "scorehmr_root": str(scorehmr_root),
             "render_model": "smpl_direct",
+            "spline_diff_config": str(args.spline_diff_config),
+            "spline_diff_config_defaults": diff_cfg,
+            "spline_diff_config_resolved": {
+                "scorehmr": {
+                    "ckpt_name": cfg.ckpt_name,
+                    "milestone": int(cfg.milestone),
+                    "use_default_ckpt": bool(cfg.use_default_ckpt),
+                    "num_samples": int(cfg.num_samples),
+                    "optim_iters": int(cfg.optim_iters),
+                    "early_stopping": bool(cfg.early_stopping),
+                    "temporal_guidance": bool(cfg.temporal_guidance),
+                    "allow_dummy_cond": bool(cfg.allow_dummy_cond),
+                    "use_pare_cond": bool(cfg.use_pare_cond),
+                    "log_pare": bool(cfg.log_pare),
+                },
+                "bspline": {
+                    "use_bspline_smooth_noise": bool(cfg.use_bspline_smooth_noise),
+                    "fps": cfg.bspline_fps,
+                    "m_per_t": cfg.bspline_m_per_t,
+                    "order": cfg.bspline_order,
+                    "use_tanh": cfg.bspline_use_tanh,
+                    "tanh_amp": cfg.bspline_tanh_amp,
+                    "blend_weight": cfg.bspline_blend_weight,
+                },
+            },
         },
     }
 
@@ -224,7 +315,7 @@ def main() -> None:
     args = _parse_args()
     root = add_runtime_paths()
     require_body_models()
-    input_dir = args.input_dir.resolve()
+    input_dir = _normalize_input_dir(args.input_dir)
     video_path = find_input_video(input_dir)
     data = load_demo_input(input_dir)
     T = infer_length(data["hmr"], data["vitpose"], data["bbx_xys"], args.max_frames)
