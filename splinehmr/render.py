@@ -79,6 +79,25 @@ def smpl_verts_from_hmr_pack(
     return verts_smpl.detach().cpu(), faces.astype(np.int64)
 
 
+
+@torch.no_grad()
+def estimate_smplx_to_smpl_transl_offset(
+    hmr_pack: dict[str, Any],
+    T: int,
+    device: str | torch.device,
+) -> torch.Tensor:
+    """Estimate per-frame translation offset to align SMPL-direct init to SMPLX->SMPL geometry.
+
+    GVHMR inputs are SMPL-X-style parameters. ScoreHMR is SMPL-native, so the
+    same axis-angle/betas/transl values fed directly into SMPL can have a
+    stable body-model origin offset. We estimate that offset by comparing mesh
+    centers under the two render paths and later add it to ScoreHMR's init_cam_t.
+    """
+    verts_smplx2smpl, _ = smpl_verts_from_hmr_pack(hmr_pack, T=T, device=device, render_model="smplx2smpl")
+    verts_smpl_direct, _ = smpl_verts_from_hmr_pack(hmr_pack, T=T, device=device, render_model="smpl_direct")
+    return (verts_smplx2smpl.mean(dim=1) - verts_smpl_direct.mean(dim=1)).detach().cpu().float()
+
+
 def _draw_overlay_legend(image: np.ndarray) -> np.ndarray:
     """Draw an RGB legend: red = before optimization, green = after optimization."""
     try:
@@ -111,14 +130,18 @@ def render_outputs(
     crf: int = 23,
     fast_render: bool = True,
     render_model: RenderModel = "smplx2smpl",
+    before_render_model: RenderModel | None = None,
+    after_render_model: RenderModel | None = None,
 ) -> dict[str, Path]:
     add_runtime_paths()
     from .gvhmr_compat.video_io import get_video_lwh, get_video_reader, get_writer
     from .gvhmr_compat.renderer import Renderer
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    verts_before, faces = smpl_verts_from_hmr_pack(before_pack, T=T, device=device, render_model=render_model)
-    verts_after, _ = smpl_verts_from_hmr_pack(after_pack, T=T, device=device, render_model=render_model)
+    before_model = before_render_model or render_model
+    after_model = after_render_model or render_model
+    verts_before, faces = smpl_verts_from_hmr_pack(before_pack, T=T, device=device, render_model=before_model)
+    verts_after, _ = smpl_verts_from_hmr_pack(after_pack, T=T, device=device, render_model=after_model)
 
     length, width, height = get_video_lwh(str(video_path))
     try:

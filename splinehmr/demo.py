@@ -9,7 +9,7 @@ import torch
 
 from .io import find_input_video, infer_length, load_demo_input, make_refined_hmr_pack, slice_tensor_dict
 from .paths import add_runtime_paths, body_model_root, find_scorehmr_root, repo_root, require_body_models, require_scorehmr_root
-from .render import render_outputs
+from .render import estimate_smplx_to_smpl_transl_offset, render_outputs
 
 METHOD_DISPLAY = {"spline-opt": "Spline-Opt", "spline-diff": "Spline-Diff"}
 
@@ -215,6 +215,26 @@ def _run_spline_diff(data: dict[str, Any], T: int, args: argparse.Namespace, fps
     tanh_amp = args.scorehmr_tanh_amp if args.scorehmr_tanh_amp is not None else bspline_cfg.get("tanh_amp", None)
     blend_weight = args.scorehmr_blend_weight if args.scorehmr_blend_weight is not None else bspline_cfg.get("blend_weight", None)
 
+    scorehmr_init_cam_t = params["transl"][:T].detach().cpu().float()
+    transl_alignment_stats: dict[str, Any] = {"enabled": True, "mode": "smplx2smpl_mesh_center_to_smpl_direct"}
+    try:
+        before_pack_for_alignment = slice_tensor_dict(hmr, T)
+        transl_offset = estimate_smplx_to_smpl_transl_offset(before_pack_for_alignment, T=T, device=args.device)
+        scorehmr_init_cam_t = scorehmr_init_cam_t + transl_offset
+        transl_alignment_stats.update(
+            {
+                "offset_mean": [float(x) for x in transl_offset.mean(dim=0).tolist()],
+                "offset_std": [float(x) for x in transl_offset.std(dim=0, unbiased=False).tolist()],
+            }
+        )
+        print(
+            "[Spline-Diff] aligned SMPL init translation to SMPLX->SMPL input: "
+            f"mean_offset={transl_alignment_stats['offset_mean']}"
+        )
+    except Exception as exc:
+        transl_alignment_stats.update({"enabled": False, "error": repr(exc)})
+        print(f"[Spline-Diff] warning: failed to align SMPL init translation; using raw transl. err={exc!r}")
+
     cfg = ScoreHMRRefineCfg(
         ckpt_name=str(score_cfg.get("ckpt_name", "score_hmr")),
         milestone=int(score_cfg.get("milestone", 100)),
@@ -238,7 +258,7 @@ def _run_spline_diff(data: dict[str, Any], T: int, args: argparse.Namespace, fps
         global_orient_aa=params["global_orient"][:T],
         body_pose_aa=body_pose_69,
         betas=params["betas"][:T],
-        init_cam_t=params["transl"][:T],
+        init_cam_t=scorehmr_init_cam_t,
         keypoints_2d=data["vitpose"][:T],
         image_size_hw=_video_hw(args.input_dir),
         K_3x3=hmr["K_fullimg"][:T],
@@ -259,6 +279,7 @@ def _run_spline_diff(data: dict[str, Any], T: int, args: argparse.Namespace, fps
             "D": int(D),
             "scorehmr_root": str(scorehmr_root),
             "render_model": "smpl_direct",
+            "scorehmr_init_translation_alignment": transl_alignment_stats,
             "spline_diff_config": str(args.spline_diff_config),
             "spline_diff_config_defaults": diff_cfg,
             "spline_diff_config_resolved": {
@@ -329,6 +350,8 @@ def main() -> None:
     if method == "spline-opt":
         refined = _run_spline_opt(data, T, args, fps)
         render_model = "smplx2smpl"
+        before_render_model = "smplx2smpl"
+        after_render_model = "smplx2smpl"
     else:
         try:
             refined = _run_spline_diff(data, T, args, fps)
@@ -337,7 +360,9 @@ def main() -> None:
                 f"Spline-Diff needs ScoreHMR dependencies in the active environment; missing module: {exc.name}. "
                 "Install them with scripts/install_scorehmr_deps.sh after setting up ScoreHMR."
             ) from exc
-        render_model = "smpl_direct"
+        render_model = "mixed"
+        before_render_model = "smplx2smpl"
+        after_render_model = "smpl_direct"
 
     before_pack = slice_tensor_dict(data["hmr"], T)
     after_pack = make_refined_hmr_pack(data["hmr"], refined, T, method)
@@ -357,7 +382,9 @@ def main() -> None:
             device=args.device,
             crf=int(args.crf),
             fast_render=bool(args.fast_render),
-            render_model=render_model,
+            render_model=before_render_model,
+            before_render_model=before_render_model,
+            after_render_model=after_render_model,
         )
 
     report = {
@@ -373,6 +400,8 @@ def main() -> None:
         "after_params": str(after_path),
         "renders": {k: str(v) for k, v in render_paths.items()},
         "render_model": render_model,
+        "before_render_model": before_render_model,
+        "after_render_model": after_render_model,
         "stats": refined.get("stats", {}),
     }
     (out_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
