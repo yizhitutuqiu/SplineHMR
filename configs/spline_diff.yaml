@@ -44,7 +44,7 @@ bspline:
   # Elastic soft blend:
   #   x_start = (1 - blend_weight) * raw + blend_weight * B-spline-projected
   # Larger values are smoother; smaller values keep stronger image fidelity.
-  blend_weight: 0.6
+  blend_weight: 1.0
 
   # Bound projected corrections for conservative smoothing.
   use_tanh: true

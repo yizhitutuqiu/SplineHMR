@@ -33,7 +33,7 @@ new file mode 100644
 index 0000000..84d404b
 --- /dev/null
 +++ b/custom/utils/bspline.py
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,205 @@
 +"""
 +B-spline temporal projection for ScoreHMR pred_noise smoothing.
 +Builds the design matrix B (N x M) and provides least-squares projection X_smooth = B @ pinv(B) @ X
@@ -53,6 +53,12 @@ index 0000000..84d404b
 +    """Single B-spline basis N_{knot_idx, order}(t) via Cox-de Boor recursion."""
 +    k = order
 +    u = knots
++
++    # For a clamped knot vector, the right endpoint belongs to the last basis
++    # function. The half-open interval convention used below would otherwise
++    # make all bases evaluate to zero at t == u[-1], corrupting the final frame.
++    if np.isclose(t, u[-1]):
++        return 1.0 if knot_idx == len(u) - k - 1 else 0.0
 +
 +    def N(i: int, p: int) -> float:
 +        if p == 0:
