@@ -1683,7 +1683,11 @@ def _mean_normed_reproj_err(
 
     dx = sm[:, :, 0] - gt[:, :, 0]
     dy = sm[:, :, 1] - gt[:, :, 1]
-    dist = torch.sqrt(dx * dx + dy * dy)  # (T,17)
+    # Add eps inside the norm. In the trajectory-edit demo, unedited joints can
+    # be supervised by the model's own SMPL/SMPL-X reprojection, producing exact
+    # zero residuals. sqrt(x^2 + y^2) has an undefined derivative at (0, 0),
+    # which can poison LBFGS with NaN gradients even when the forward loss is 0.
+    dist = torch.sqrt(dx * dx + dy * dy + eps * eps)  # (T,17)
     dist_n = dist / s[:, None]  # (T,17)
 
     if not valid.any():
@@ -1728,7 +1732,8 @@ def _per_frame_normed_reproj_err(
     valid = conf >= float(conf_thr)
     dx = sm[:, :, 0] - gt[:, :, 0]
     dy = sm[:, :, 1] - gt[:, :, 1]
-    dist = torch.sqrt(dx * dx + dy * dy)
+    # Keep this numerically aligned with `_mean_normed_reproj_err`.
+    dist = torch.sqrt(dx * dx + dy * dy + eps * eps)
     dist_n = dist / s[:, None]
     dist_n_masked = torch.where(valid, dist_n, torch.full_like(dist_n, float("nan")))
     if use_max:
