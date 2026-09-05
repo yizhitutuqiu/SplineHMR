@@ -132,6 +132,7 @@ def render_outputs(
     render_model: RenderModel = "smplx2smpl",
     before_render_model: RenderModel | None = None,
     after_render_model: RenderModel | None = None,
+    draw_overlay_legend: bool = True,
 ) -> dict[str, Path]:
     add_runtime_paths()
     from .gvhmr_compat.video_io import get_video_lwh, get_video_reader, get_writer
@@ -183,7 +184,8 @@ def render_outputs(
             img_after = renderer.render_mesh(verts_after[i].to(dev), img_raw, colors=[0.8, 0.8, 0.8], VI=50)
             img_overlay = renderer.render_mesh(verts_before[i].to(dev), img_raw, colors=[255, 0, 0], VI=50, alpha=0.58)
             img_overlay = renderer.render_mesh(verts_after[i].to(dev), img_overlay, colors=[0, 255, 0], VI=50, alpha=0.58)
-            img_overlay = _draw_overlay_legend(img_overlay)
+            if draw_overlay_legend:
+                img_overlay = _draw_overlay_legend(img_overlay)
             writers["before_video"].write_frame(img_before)
             writers["after_video"].write_frame(img_after)
             writers["compare_video"].write_frame(np.concatenate([img_before, img_after], axis=1))
